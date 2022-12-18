@@ -46,17 +46,118 @@ CPU通常指的是执行计算的硬件元素，也是中央处理单元的首�
 xv6内核提供了UNIX内核传统上提供的服务和系统调用的子集。
 
 列出xv6的所有系统调用。
-int fork();
-int exit(int status);
-int wait(int *status);
-int kill(int pid);
-int getpid();
-int sleep(int n);
+int fork(void); // 创建一个进程，返回该子进程的PID。
+int exit(int status); // 终止当前进程，status报告给wait()且成功则不返回。
+int wait(int *status); // 等待子进程退出，退出状态通过status返回，返回值表示子进程的PID。
+int kill(int pid); // 终止PID指定的进程，成功返回0失败返回-1。
+int getpid(void); // 返回当前进程的PID。
+int sleep(int n); // 暂停n个时钟滴答
+int exec(char *file, char *argv[]); // 暂入文件并带参数执行，仅在错误时返回。
+char *sbrk(int n); // 将进程内存边界增长n个字节，返回新内存起始位置。
+int open(char *file, int flags); // 打开一个文件，flags指示读/写，返回文件描述符。
+int write(int fd, char *buf, int n); // 将buf中的n个字节写到文件描述符表示的文件中，返回n。
+int read(int fd, char *buf, int n); // 从文件中读n个字节到buf里，返回读到的字节数，返回0表示读到文件尾。
+int close(int fd); // 释放打开的文件。
+int dup(int fd); // 根据fd表示的文件返回新的文件描述符。
+int pipe(int p[]); // 创建一个管道，连接读/写文件描述符p[0]和p[1]。
+int chdir(char *dir); // 改变当前的工作目录。
+int mkdir(char *dir); // 创建一个新的目录。
+int mknod(char *file, int, int); // 创建一个设备文件。
+int fstat(int fd, struct stat *st); // 将一个打开的文件的信息放置到st中。
+int stat(char *file, struct stat *st); // 将指定的文件的信息放置在st中。
+int link(char *file1, char *file2); // 为文件file1创建别名链接。
+int unlink(char *file); // 移除一个文件。
+以上若无特别说明，都是成功返回0失败返回-1。
 
+本章的其余部分概述了xv6的服务：进程、内存、文件描述符、管道和文件系统。
+并用代码片段和讨论shell即UNIX的命令行用户界面如何使用来说明。
+shell对系统调用的使用说明了这些接口是如何精心设计的。
 
+shell是一个普通的程序，从用户那里读取命令并执行。
+shell是一个用户程序，而不是内核的一部分。这一事实说明了系统调用接口的强大功能即shell没有什么特别之处。
+这也意味着shell易于更换，因此现代UNIX系统有多种shell可供选择。每种shell都有自己的用户界面和脚本功能。
+xv6 shell 是 UNIX Bourne shell 本质的简单实现，可以在 xv6-riscv/user/sh.c 找到。
 
 1.1 进程和内存
+
+xv6进程由用户空间内存如指令、数据和堆栈和内核私有的每个进程的状态组成。
+xv6分时进程透明地在等待执行的进程组之间切换可用的CPU。
+当进程未执行时，xv6会保存进程的CPU寄存器，并在下次运行进程时恢复。
+内核将进程标识符或PID与每个进程相关联。
+
+一个进程可以使用fork系统调用创建一个新进程。
+fork为新进程提供调用进程内存的精确副本，包括指令和数据。
+fork在原始进程和新进程中都返回，在原始进程中返回新进程的PID，在新进程中返回零。
+原始进程和新进程通常称为父进程和子进程。
+
+以下C程序片段
+------------------------------------------
+int pid;
+if ((pid = fork()) > 0) {
+    (void)printf("Parent: child = %d created.\n", pid);
+    pid = wait(NULL);
+    (void)printf("Parent: child = %d done.\n", pid);
+} else if (0 == pid) {
+    (void)printf("Child: child = %d running.\n", getpid());
+    exit(0);
+} else {
+    (void)printf("Error: fork.\n");
+    exit(1);
+}
+------------------------------------------
+
+exit系统调用导致调用进程停止执行并释放内存和打开的文件等资源。
+exit接收整数状态参数，通常0表示成功而1表示失败。
+wait系统调用返回当前进程退出或杀死的子进程的PID，并将子进程的退出状态复制传递给wait。
+如果调用者的子进程都没有退出，那么wait将等待其中一个退出。
+如果调用者没有子进程，wait立即返回-1。
+如果父进程不关心子进程的退出状态，可以传递空地址。
+
+"Parent: child =" 和 "Child: child =" 可能以任一顺序甚至混合出现(并发竞争)。
+子进程退出后，父进程的wait返回。
+
+尽管子进程最初与父进程具有相同的内存内容，但父进程和子进程使用独立的内存和寄存器执行。
+exec系统调用用从文件系统中加载存储的文件，并用新内存映像替换调用进程的内存。
+这样的文件必须有特定的格式，哪部分区域是指令，哪部分区域是数据，从哪条指令开始执行，等等。
+xv6使用ELF格式，详见第3章，通常该ELF文件就是程序源代码的编译结果。
+exec成功时不返回调用程序，相反是从加载的文件的ELF标头中声明的入口点开始执行。
+exec有两个参数，包含可执行文件的文件名和一个字符串参数数组。
+
+char *argv[0] = "echo";
+char *argv[1] = "hello";
+argv[2] = 0;
+(void)exec("/bin/echo", argv);
+(void)printf("Error: exec.\n");
+
+此片段将调用程序替换为使用参数列表 echo hello 运行的程序 /bin/echo 的实例。
+大多数程序忽略参数数组的第一个元素，通常是程序的名称。
+
+xv6 shell 使用上述调用代表用户运行程序。
+Shell的主体结构相当简单，详见 xv6-riscv/user/sh.c: int main(void)
+主循环使用getcmd从用户读取一行输入，然后调用fork创建shell进程的副本。
+
+父调用等待，而子进程运行命令。
+例如用户向shell键入 echo hello 于是runcmd将以 echo hello 作为参数调用。
+xv6-riscv/user/sh.c: void runcmd(struct cmd*) 运行实际的命令。
+对于 echo hello 而言会调用 user/sh.c: exec(ecmd->argv[0], ecmd->argv) 。
+如果exec成功则子进程将从echo而不是runcmd执行指令。
+在某些时候echo将调用exit将导致父进程从 xv6-riscv/user/sh.c: int main(void) 中的等待返回。
+
+可能想知道为什么fork和exec没有组合在一个调用中，稍后将看到shell在其I/O重定向的实现中利用了分离。
+为了避免创建重复进程然后立即使用exec替换的浪费，操作系统内核通过使用虚拟内存技术如写时复制优化fork的实现。
+以上用于此例，详见4.6节。
+
+xv6隐式分配大部分用户空间内存，fork分配父内存的子副本所需的内存，exec分配足够的内存来保存可执行文件。
+在运行时需要更多内存的进程用用malloc调用sbrk(n)将其数据内存增加n字节，sbrk返回新内存的位置。
+
 1.2 I/O和文件描述符
+文件描述符是一个小整数，表示进程可以读取或写入的内核管理对象。
+进程可以通过打开文件、目录或设备，或者通过创建管道，或者通过复制现有描述符来获取文件描述符。
+为简单起见，通常将文件描述符所指的对象称为文件。
+文件描述符接口抽象出文件、管道和设备之间的差异，使看起来都像字节流，于是将输入和输出称为I/O。
+
+
+
 1.3 管道
 1.4 文件系统
 1.5 现实世界
